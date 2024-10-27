@@ -78,6 +78,10 @@ run = [
     "usage g md examples/docs/MISE_MULTI.md",
 ]
 
+[tasks."render:fig"]
+depends = ["build"]
+run = "cd tasks/fig && npx @withfig/autocomplete-tools compile"
+
 [tasks.release]
 run = "cargo release --workspace"
 
