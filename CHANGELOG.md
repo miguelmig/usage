@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.12.1](https://github.com/jdx/usage/compare/v0.12.0..v0.12.1) - 2024-10-27
+
+### 🐛 Bug Fixes
+
+- added backticks around source code link by [@jdx](https://github.com/jdx) in [53121fa](https://github.com/jdx/usage/commit/53121fabc8bcb3603474b0864a6f9add592bcabf)
+- bug with missing source code template by [@jdx](https://github.com/jdx) in [3e3e303](https://github.com/jdx/usage/commit/3e3e30389a9c508b30f00c3751152ea51d2fc8fa)
+
+## [0.12.0](https://github.com/jdx/usage/compare/v0.11.1..v0.12.0) - 2024-10-27
+
+### 🚀 Features
+
+- added source code links by [@jdx](https://github.com/jdx) in [6bc9c84](https://github.com/jdx/usage/commit/6bc9c84fc7a6efaf09e30af75925488f761834bd)
+
+### 🐛 Bug Fixes
+
+- use prettier-compatible md list syntax by [@jdx](https://github.com/jdx) in [2726bf2](https://github.com/jdx/usage/commit/2726bf22e7c4fabb48322b58813ff50bda698fe5)
+
+## [0.11.1](https://github.com/jdx/usage/compare/v0.11.0..v0.11.1) - 2024-10-25
+
+### 🐛 Bug Fixes
+
+- fixed default arg/flags by [@jdx](https://github.com/jdx) in [#135](https://github.com/jdx/usage/pull/135)
+- read choices from clap args by [@jdx](https://github.com/jdx) in [#136](https://github.com/jdx/usage/pull/136)
+
+### 📦️ Dependency Updates
+
+- update dawidd6/action-homebrew-bump-formula action to v4 by [@renovate[bot]](https://github.com/renovate[bot]) in [#131](https://github.com/jdx/usage/pull/131)
+- update dependency vitepress to v1.4.1 by [@renovate[bot]](https://github.com/renovate[bot]) in [#130](https://github.com/jdx/usage/pull/130)
+
 ## [0.11.0](https://github.com/jdx/usage/compare/v0.10.0..v0.11.0) - 2024-10-14
 
 ### 🚀 Features
@@ -11,6 +40,7 @@
 ### 🐛 Bug Fixes
 
 - bug with help and args by [@jdx](https://github.com/jdx) in [6c615f9](https://github.com/jdx/usage/commit/6c615f9f8b1c6798fcba3ed88890b2891505c6ec)
+- allow building without docs feature by [@jdx](https://github.com/jdx) in [212f96c](https://github.com/jdx/usage/commit/212f96ccb118f393ed6d5141996e02ec3e3630d9)
 
 ### 🔍 Other Changes
 
