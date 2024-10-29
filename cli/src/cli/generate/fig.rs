@@ -1,4 +1,4 @@
-use std::ops::Index;
+use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
 use std::vec;
 
@@ -39,10 +39,11 @@ pub struct Fig {
     out_file: Option<PathBuf>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 enum GeneratorType {
     EnvVar,
-    Custom
+    Mount,
+    Complete
 }
 
 #[derive(Deserialize, Clone)]
@@ -66,35 +67,40 @@ impl Serialize for FigGenerator {
 #[serde(rename_all = "camelCase")] 
 struct FigArg {
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
     is_optional: bool,
     is_variadic: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     template: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    generators: Option<FigGenerator>
+    generators: Option<FigGenerator>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    suggestions: Vec<String>
 }
 
 #[derive(Serialize, Deserialize)]
 struct FigOption {
     name: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     #[serde(rename(serialize = "isRepeatable"))]
     is_repeatable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     args: Option<FigArg>
 }
 
 #[derive(Serialize, Deserialize)]
 struct FigCommand {
     name: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     subcommands: Vec<FigCommand>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     options: Vec<FigOption>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    args: Vec<FigArg>,
-    #[serde(skip)]
-    generator: Vec<FigGenerator>
+    args: Vec<FigArg>
 }
 
 impl FigGenerator {
@@ -114,7 +120,7 @@ impl FigGenerator {
         }
         let name = tokens.iter().rev().nth(1).unwrap(); // Last one will be --usage
         Self {
-            type_: GeneratorType::Custom,
+            type_: GeneratorType::Mount,
             name: name.to_string(),
             script: mount.run.clone(),
             template_str: format!("${name}$"),
@@ -156,17 +162,23 @@ impl FigArg {
         // Need to parse name for <> and [] to figure out if optional 
         Self {
             name: FigArg::get_name(&arg.name),
+            description: arg.help.clone(),
             is_variadic: arg.var, 
             is_optional: !arg.required,// FigArg::is_optional(&arg.name),
             template: FigArg::get_template(&arg.name),
-            generators: FigArg::get_generator(&arg.name)
+            generators: FigArg::get_generator(&arg.name),
+            suggestions: arg.choices.clone().map(|c|c.choices).unwrap_or(vec![])
         }
     }
 
-    pub fn update_from_complete(&self, spec: SpecComplete) {
+    pub fn update_from_complete(&mut self, spec: SpecComplete) {
+        let name = spec.name;
         self.generators = Some(FigGenerator {
-            type_: GeneratorType::Custom,
-            name: 
+            type_: GeneratorType::Complete,
+            name: name.clone(),
+            script: "".to_string(),
+            post_process: spec.run.unwrap_or("".to_string()),
+            template_str: format!("${name}$")
         })
     }
 }
@@ -185,8 +197,10 @@ impl FigOption {
         .collect()
     }
 
-    pub fn get_args(&self) -> Vec<&FigArg> {
-        self.args.iter().collect_vec()
+    pub fn get_args(&mut self) -> Vec<&mut FigArg> {
+        self.args.as_mut()
+            .and_then(|a| Some(vec![a]))
+            .unwrap_or(vec![])
     }
 
     pub fn parse_from_spec(flag: &SpecFlag) -> Self {
@@ -218,13 +232,18 @@ impl FigCommand {
         [sub,opt,args].concat()
     }
 
-    pub fn get_args(&self) -> Vec<&FigArg> {
-        let opt_args = self.options.iter()
-            .map(|o| o.get_args()).collect_vec().concat();
-        let sub_args = self.subcommands.iter()
-            .map(|c| c.get_args()).collect_vec().concat();
-        let args = self.args.iter().map(|a| a).collect_vec();
-        [opt_args,sub_args,args].concat()
+    pub fn get_args(&mut self) -> Vec<&mut FigArg> {
+        let opt_args = self.options.iter_mut()
+            .map(|o| o.get_args()).concat();
+        let sub_args = self.subcommands.iter_mut()
+            .map(|c| c.get_args()).concat();
+        
+        let args = self.args.iter_mut().map(|a| a).collect_vec();
+        let mut result = Vec::new();
+        for vec in [opt_args, sub_args, args] {
+            result.extend(vec);
+        }
+        result
     }
 
     pub fn parse_from_spec(cmd: &SpecCommand) -> Option<Self> {
@@ -243,8 +262,7 @@ impl FigCommand {
             args: cmd.args.iter()
                 .filter(|a| !a.hide)
                 .map(|arg| FigArg::parse_from_spec(arg))
-                .collect(),
-            generator: FigCommand::get_generator(cmd)
+                .collect()
         })
     }
 }
@@ -299,12 +317,17 @@ impl Fig {
         "import * as Generators from '../generators';".to_string()
     }
 
-    fn fill_args_complete(args: Vec<&FigArg>, completes: IndexMap<String, SpecComplete>) {
+    fn fill_args_complete(args: Vec<&mut FigArg>, completes: IndexMap<String, SpecComplete>) {
         let completable_args = args.into_iter().map(|a| {
             let completekv = completes.get_key_value(&a.name);
-            completekv.and_then(|(_,v)| v.clone().run)
+            completekv.and_then(|(_,v)| Some((a, v.clone())))
         }).filter(Option::is_some);
-
+        
+        completable_args.for_each(|a| {
+            let x = a.unwrap();
+            x.0.update_from_complete(x.1)
+        });
+        
     }
 
     pub fn run(&self) -> miette::Result<()> {
@@ -314,24 +337,30 @@ impl Fig {
             Ok(())
         };
         let (spec, _) = Spec::parse_file(&self.file)?;
-        let main_command = FigCommand::parse_from_spec(&spec.cmd).unwrap();
+        let mut main_command = FigCommand::parse_from_spec(&spec.cmd).unwrap();
+        let args = main_command.get_args();
+        let completes = spec.complete;
+        Fig::fill_args_complete(args, completes);
         let j = serde_json::to_string_pretty(&main_command).unwrap();
         let path = self.out_file.clone().unwrap_or(PathBuf::from(".(mise.test.ts"));
         let mut result = format!("const completionSpec: Fig.Spec = {j}");
+
 
         let generators = main_command.get_generators();
         let generator_text = Fig::get_generator_text();
         generators.iter().cloned().for_each(|g| {
             let template_str = g.template_str;
-            let generator_name = g.name;
+            let generator_name = (g.type_ == GeneratorType::Mount).then(|| "usageGeneratorTemplate".to_string())
+                .or((g.type_ == GeneratorType::Complete).then(|| "completionGeneratorTemplate".to_string()))
+                .unwrap_or(g.name);
+            let generator_str = g.script;
             let generator_postprocess = g.post_process;
-            let arg = (g.type_ == GeneratorType::Custom)
-                .then(format!("({generator_postprocess})"));
-            result = result.replace(format!("\"{template_str}\"").as_str(), format!("Generators.{generator_name}").as_str())
+            let arg = (g.type_ == GeneratorType::Mount)
+                .then(|| format!("(\"{generator_str})\""))
+                .or((g.type_ == GeneratorType::Complete).then(|| format!("(`{generator_postprocess}`)")))
+                .unwrap_or("".to_string());
+            result = result.replace(format!("\"{template_str}\"").as_str(), format!("Generators.{generator_name}{arg}").as_str())
         });
-        let args = main_command.get_args();
-        let completes = spec.complete;
-        Fig::fill_args_complete(args, completes);
 
         result = [[generator_text, result, "export default completionSpec;".to_string()]].concat().join("\n\n");
         write(&path, result.as_str());
