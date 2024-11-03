@@ -8,7 +8,7 @@
     "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
-    "vitepress": "1.3.4"
+    "vitepress": "1.4.5"
   },
   "devDependencies": {
     "@tsconfig/node18": "^18.2.4",
