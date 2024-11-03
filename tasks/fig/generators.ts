@@ -1,67 +1,34 @@
 export const envVarGenerator = {
   script: ['sh', '-c', 'env'],
-  postProcess: (output) => {
+  postProcess: (output: string) => {
     return output.split('\n').map(l => ({name: l.split('=')[0]}))
   }
 }
 
-export const singleCmdNewLineGenerator = (completion_cmd): Fig.Generator => ({
+export const singleCmdNewLineGenerator = (completion_cmd: string): Fig.Generator => ({
   script: completion_cmd.split(' '),
   splitOn: '\n'
 })
 
-export const singleCmdJsonGenerator = (cmd): Fig.Generator => ({
+export const singleCmdJsonGenerator = (cmd: string): Fig.Generator => ({
   script: cmd.split(' '),
-  postProcess: (out) => JSON.parse(out).map(r => ({name: r.name, description: r.description}))
+  postProcess: (out) => (JSON.parse(out).map((r: any) => ({name: r.name, description: r.description})))
 })
 
-
-
-export const contextualGeneratorLastWord = (cmd): Fig.Generator => ({
+export const contextualGeneratorLastWord = (cmd: string): Fig.Generator => ({
   script: (context) => {
     if (context.length < 2) {
       return []
     }
     
     const prev = context[context.length - 2] // -1 is the current word
-    return ['sh', '-c', cmd, prev]
+    return ['sh', '-c', [cmd, prev].join(' ')]
   }
 })
 
-export const pluginGenerator: Fig.Generator = singleCmdNewLineGenerator('mise plugins --core --user')
-export const allPluginsGenerator: Fig.Generator = singleCmdNewLineGenerator('mise plugins --all')
-export const simpleTaskGenerator = singleCmdJsonGenerator('mise tasks -J')
-export const settingsGenerator = singleCmdNewLineGenerator(`mise settings --keys`)
-export const aliasGenerator: Fig.Generator = {
-  ...contextualGeneratorLastWord('mise alias ls'),
-  postProcess: (out) => {
-    //return [{name: out}]
-    //return out.split('\t').map(l => ({name: l}))
-    //return [{name: "test", "description": out}]
-    const tokens = out.split(' ') // TODO: Fix this, not working
-    return tokens.map((_, i) => {
-      if ((i % 3) == 0) {
-        return [tokens[i], tokens[i+1], tokens[i+2]]
-      }
-    }).map(l => ({name: l}))
-  }
-}
-
-export const miseConfigPathGenerator: Fig.Generator = {
-  ...singleCmdJsonGenerator('mise config ls -J'),
-  postProcess: (out) => JSON.parse(out).map(r => ({name: r.path, description: r.path}))
-}
 
 export const usageGeneratorTemplate = (usage_cmd: string) : Fig.Generator => {
   return {
-    /*script: ["sh", "-c", `usage complete-word --shell bash -s "$$(${usage_cmd})"`],
-    postProcess: (output) => {
-      //return output.split('\n').map(l => { return {name: l} } )
-      return [{name: output.slice(0, 20)}]
-      return [{name: output.split("\n")[0].split(' ')[1]}]
-    }
-    */
-
     custom: async (tokens: string[], executeCommand) => {
       const { stdout: spec } = await executeCommand({
         command: 'sh', args: ['-c', usage_cmd]
@@ -79,9 +46,6 @@ export const usageGeneratorTemplate = (usage_cmd: string) : Fig.Generator => {
 
 export const completionGeneratorTemplate = (argSuggestionBash: string): Fig.Generator => {
   return {
-    //trigger: '@',
-    //getQueryTerm: '@',
-
     custom: async (tokens: string[], executeCommand) => {
       let arg = argSuggestionBash;
       if (tokens.length >= 1) {
@@ -91,7 +55,6 @@ export const completionGeneratorTemplate = (argSuggestionBash: string): Fig.Gene
       if (tokens.length >= 2) {
         arg = arg.replace(`{{words[PREV]}}`, tokens[tokens.length - 2])
       }
-      //return [{name: arg}]
       const {stdout: text} = await executeCommand({
         command: 'sh', args: ['-c', arg]
       });
@@ -99,4 +62,71 @@ export const completionGeneratorTemplate = (argSuggestionBash: string): Fig.Gene
       return text.split("\n").map((elm) => ({ name: elm }));
     }
   }
+}
+
+
+// Dynamically generate fig specs on "mount run" commands
+export const usageGenerateSpec = (cmds: string[]) => {
+  return async (tokens: string[], executeCommand: Fig.ExecuteCommandFunction): Promise<Fig.Spec> => {
+    const promises = cmds.map(async (cmd) => {
+      try {
+        const { stdout } = await executeCommand({
+          command: 'sh', args: ['-c', cmd]
+        });
+        const { stdout: figSpecOut } = await executeCommand({
+          command: 'usage', args: ['g', 'fig', '--spec', stdout, '--stdout']
+        })
+        const start_of_json = figSpecOut.indexOf("{")
+        const j = figSpecOut.slice(start_of_json)
+        return JSON.parse(j).subcommands as Fig.Subcommand[]
+      }
+      catch (e){
+        throw e;
+      }
+    })
+
+    const subcommands = (await Promise.allSettled(promises)).filter(p => p.status === 'fulfilled').map(p => p.value);
+    
+    return { subcommands: subcommands.flat() } as Fig.Spec
+  }
+}
+
+
+export const pluginGenerator: Fig.Generator = singleCmdNewLineGenerator('mise plugins --core --user')
+export const allPluginsGenerator: Fig.Generator = singleCmdNewLineGenerator('mise plugins --all')
+export const simpleTaskGenerator = singleCmdJsonGenerator('mise tasks -J')
+export const settingsGenerator = singleCmdNewLineGenerator(`mise settings --keys`)
+
+export const aliasGenerator: Fig.Generator = {
+  ...contextualGeneratorLastWord('mise alias ls'),
+  postProcess: (out) => {
+    //return [{name: out}]
+    //return out.split('\t').map(l => ({name: l}))
+    //return [{name: "test", "description": out}]
+    const tokens = out.split(/\s+/)
+    if (tokens.length == 0)
+      return []
+
+    return tokens.flatMap((_, i) => {
+      if ((i % 3) == 0) {
+        return [tokens[i+1]]
+      }
+      return []
+    }).filter(l => l.trim().length > 0).map(l => ({name: l.trim()}))
+  }
+}
+
+export const pluginWithAlias: Fig.Generator = {
+  script: 'mise alias ls'.split(' '),
+  postProcess: (output: string) => {
+    const plugins = output.split('\n').map((line) => {
+      const tokens = line.split(/\s+/)
+      return tokens[0]
+    })
+    return [... new Set(plugins)].map((p) => ({name: p}))
+  }
+}
+export const configPathGenerator: Fig.Generator = {
+  ...singleCmdJsonGenerator('mise config ls -J'),
+  postProcess: (out) => JSON.parse(out).map((r: any) => ({name: r.path, description: r.path}))
 }

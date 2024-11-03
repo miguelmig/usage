@@ -1,56 +1,43 @@
-use std::borrow::Borrow;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::vec;
 
 use clap::Args;
 use indexmap::IndexMap;
 use itertools::Itertools;
-use usage::{Spec, SpecArg, SpecCommand, SpecComplete, SpecFlag, SpecMount};
+use usage::{SpecArg, SpecCommand, SpecComplete, SpecFlag};
 
 use serde::{Deserialize, Serialize, Serializer};
-
+use crate::cli::generate;
 
 #[derive(Args)]
 #[clap()]
 pub struct Fig {
     /// A usage spec taken in as a file
     #[clap(short, long)]
-    file: PathBuf,
-    // /// Pass a usage spec in an argument instead of a file
-    // #[clap(short, long, required_unless_present = "file", overrides_with = "file")]
-    // spec: Option<String>,
-    /// Render each subcommand as a separate markdown file
-    #[clap(short, long, requires = "out_dir", conflicts_with = "out_file")]
-    multi: bool,
+    file: Option<PathBuf>,
 
-    /// Prefix to add to all URLs
-    #[clap(long)]
-    url_prefix: Option<String>,
+    /// To generate the fig outputs based on standard input instead of file
+    #[clap(long, required_unless_present="file", overrides_with = "file")]
+    spec: Option<String>,
 
-    /// Escape HTML in markdown
-    #[clap(long)]
-    html_encode: bool,
-
-    /// Output markdown files to this directory
-    #[clap(long, value_hint = clap::ValueHint::DirPath)]
-    out_dir: Option<PathBuf>,
-
-    #[clap(long, value_hint = clap::ValueHint::FilePath, required_unless_present = "multi")]
+    /// File on where to save the generated Fig spec
+    #[clap(long, value_hint = clap::ValueHint::FilePath)]
     out_file: Option<PathBuf>,
+
+    /// Whether to output to stdout
+    #[clap(long, action = clap::ArgAction::SetTrue, required_unless_present="out_file", overrides_with = "out_file")]
+    stdout: Option<bool>
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 enum GeneratorType {
     EnvVar,
-    Mount,
-    Complete
+    Complete,
 }
 
 #[derive(Deserialize, Clone)]
 struct FigGenerator {
     type_: GeneratorType,
-    name: String,
-    script: String,
     post_process: String,
     template_str: String,
 }
@@ -79,7 +66,7 @@ struct FigArg {
     suggestions: Vec<String>
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct FigOption {
     name: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,7 +77,8 @@ struct FigOption {
     args: Option<FigArg>
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
 struct FigCommand {
     name: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,49 +88,63 @@ struct FigCommand {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     options: Vec<FigOption>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    args: Vec<FigArg>
+    args: Vec<FigArg>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generate_spec: Option<String>
 }
 
 impl FigGenerator {
-    pub fn create_env_generator() -> Self {
+    pub fn create_simple_generator(type_: GeneratorType) -> Self {
         Self {
-            type_: GeneratorType::EnvVar,
-            name: String::from("envVarGenerator"),
-            script: String::from("sh -c env"),
-            template_str: String::from("$ENV_VAR_GENERATOR$"),
-            post_process: String::from("return output.split('\\n').map(l => { name: l.split('=')[0]})")
+            type_: type_.clone(),
+            template_str: FigGenerator::get_generator_name(type_).to_uppercase(),
+            post_process: "".to_string()
         }
     }
-    pub fn create_from_mount(mount: &SpecMount) -> Self {
-        let tokens = mount.run.split(" ").collect_vec();
-        if tokens.len() <= 2 {
-            panic!("Invalid mount {mount}");
-        }
-        let name = tokens.iter().rev().nth(1).unwrap(); // Last one will be --usage
-        Self {
-            type_: GeneratorType::Mount,
-            name: name.to_string(),
-            script: mount.run.clone(),
-            template_str: format!("${name}$"),
-            post_process: "test".to_string()
+
+    fn get_generator_name(type_: GeneratorType) -> String {
+        match type_.clone() {
+            GeneratorType::EnvVar => "envVarGenerator".to_string(),
+            GeneratorType::Complete => "completionGeneratorTemplate".to_string(),
         }
     }
+
+    fn get_generator_arg(&self) -> String {
+        match self.type_ {
+            GeneratorType::Complete => {
+                let postprocess = self.post_process.clone();
+                format!("(`{postprocess}`)")
+            }
+            _ => {
+                "".to_string()
+            }
+        }
+    }
+
+    pub fn get_generator_text(&self) -> String {
+        let generator_name = FigGenerator::get_generator_name(self.type_.clone());
+        let arg = self.get_generator_arg();
+
+        format!("{generator_name}{arg}")
+    }
+
 }
 
 impl FigArg {
-
     fn get_template(name: &String) -> Option<String> {
         name.to_lowercase().contains("file")
             .then(|| "filepaths".to_string())
             .or(name.to_lowercase().contains("dir").then(|| "folders".to_string()))
             .or(name.to_lowercase().contains("path").then(|| "filepaths".to_string()))
-            .or_else(|| {println!("Unknown name {name}"); None})
     }
 
     fn get_generator(name: &String) -> Option<FigGenerator> {
-        name.to_lowercase().contains("env_var")
-        .then(|| FigGenerator::create_env_generator())
-    } 
+        name.to_lowercase().contains("env_vars")
+        .then(|| FigGenerator::create_simple_generator(GeneratorType::EnvVar))
+        .or(name.to_lowercase().contains("env_var")
+            .then(|| FigGenerator::create_simple_generator(GeneratorType::EnvVar)))
+    }
 
     pub fn get_generators(&self) -> Vec<FigGenerator> {
         match self.generators.clone() {
@@ -159,12 +161,11 @@ impl FigArg {
     }
 
     pub fn parse_from_spec(arg: &SpecArg) -> Self {
-        // Need to parse name for <> and [] to figure out if optional 
         Self {
             name: FigArg::get_name(&arg.name),
             description: arg.help.clone(),
             is_variadic: arg.var, 
-            is_optional: !arg.required,// FigArg::is_optional(&arg.name),
+            is_optional: !arg.required,
             template: FigArg::get_template(&arg.name),
             generators: FigArg::get_generator(&arg.name),
             suggestions: arg.choices.clone().map(|c|c.choices).unwrap_or(vec![])
@@ -173,13 +174,12 @@ impl FigArg {
 
     pub fn update_from_complete(&mut self, spec: SpecComplete) {
         let name = spec.name;
-        self.generators = Some(FigGenerator {
+        
+        self.generators = self.generators.clone().or_else(|| Some(FigGenerator {
             type_: GeneratorType::Complete,
-            name: name.clone(),
-            script: "".to_string(),
             post_process: spec.run.unwrap_or("".to_string()),
             template_str: format!("${name}$")
-        })
+        }))
     }
 }
 
@@ -219,10 +219,6 @@ impl FigCommand {
         r
     }
 
-    fn get_generator(cmd: &SpecCommand) -> Vec<FigGenerator> {
-        cmd.mounts.iter().map(|m| FigGenerator::create_from_mount(m)).collect()
-    }
-
     pub fn get_generators(&self) -> Vec<FigGenerator> {
         let sub = self.subcommands.iter()
             .map(|s| s.get_generators())
@@ -230,6 +226,13 @@ impl FigCommand {
         let opt = self.options.iter().map(|o| o.get_generators()).collect_vec().concat();
         let args = self.args.iter().map(|a| a.get_generators()).collect_vec().concat();
         [sub,opt,args].concat()
+    }
+
+    pub fn get_commands(&self) -> Vec<FigCommand> {
+        let subcmds = self.subcommands.iter()
+            .map(|s| s.get_commands())
+            .concat();
+        [subcmds, vec![self.clone()]].concat()
     }
 
     pub fn get_args(&mut self) -> Vec<&mut FigArg> {
@@ -262,59 +265,67 @@ impl FigCommand {
             args: cmd.args.iter()
                 .filter(|a| !a.hide)
                 .map(|arg| FigArg::parse_from_spec(arg))
-                .collect()
+                .collect(),
+            generate_spec: (cmd.mounts.len() > 0).then(|| {
+                let calls = cmd.mounts.iter().cloned().map(|m| {
+                    let run = m.run;
+                    format!("\"{run}\"")
+                }).join(",");
+                format!("${calls}$")
+            })
         })
-    }
-}
-#[derive(Clone)]
-struct RecursiveContext {
-    ident: usize,
-    parents: Vec<String>,
-    current_node: String
-}
-
-impl RecursiveContext {
-    pub fn new() -> Self {
-        Self {
-            ident: 1,
-            parents: vec![],
-            current_node: String::from("")
-        }
-    }
-
-    pub fn incr(&mut self) {
-        self.ident += 1;
-    }
-
-    pub fn reset_ident(&mut self) {
-        self.ident = 0
-    }
-
-    pub fn drill_down(&mut self, child: String) {
-        self.incr();
-        self.parents.push(self.current_node.clone());
-        self.current_node = child;
-    }
-
-    pub fn drill_up(&mut self) {
-        self.ident -= 1;
-        self.current_node = self.parents.pop().unwrap();
     }
 }
 
 impl Fig {
-    /*
-    fn list_helper(mut l: impl Iterator<Item = String>) -> String {
-        if l.size_hint().1.unwrap_or(0) == 0 {
-            return String::from("");
+    pub fn run(&self) -> miette::Result<()> {
+        let write = |path: &PathBuf, md: &str| -> miette::Result<()> {
+            println!("writing to {}", path.display());
+            xx::file::write(path, format!("{}\n", md.trim()))?;
+            Ok(())
+        };
+        let spec = generate::file_or_spec(&self.file, &self.spec)?;
+        let mut main_command = FigCommand::parse_from_spec(&spec.cmd).unwrap();
+        let args = main_command.get_args();
+        let completes = spec.complete;
+        Fig::fill_args_complete(args, completes);
+        let j = serde_json::to_string_pretty(&main_command).unwrap();
+        let path = self.out_file.clone().unwrap_or(PathBuf::from("./usage.ts"));
+        let mut result = format!("const completionSpec: Fig.Spec = {j}");
+        
+        let generators = main_command.get_generators();
+        generators.iter().cloned().for_each(|g| {
+            let template_str = g.clone().template_str;
+            let generator_call_text = g.get_generator_text();
+            result = result.replace(format!("\"{template_str}\"").as_str(), generator_call_text.as_str())
+        });
+
+        // Handle mount run commands
+        main_command.get_commands().iter().cloned()
+            .filter(|cmd| cmd.generate_spec.is_some())
+            .for_each(|cmd| {
+                let call_template_str = cmd.generate_spec.unwrap();
+                let args = call_template_str.replace("$", "");
+                let replace_str = call_template_str.replace("\"", "\\\"");
+                result = result.replace(format!("\"{replace_str}\"").as_str(), format!("usageGenerateSpec([{args}])").as_str())
+            });
+
+        let output_to_str = self.stdout.unwrap_or(true);
+        if output_to_str {
+            print!("{result}");
+            Ok(())
         } else {
-            return l.join(",");
+            result = [Fig::get_prescript(), result, Fig::get_postscript()].join("\n\n");
+            write(&path, result.as_str())
         }
     }
-    */
 
-    fn get_generator_text() -> String {
-        "import * as Generators from '../generators';".to_string()
+    fn get_prescript() -> String {
+        include_str!("../../../../tasks/fig/generators.ts").to_string()
+    }
+
+    fn get_postscript() -> String {
+        "export default completionSpec;".to_string()
     }
 
     fn fill_args_complete(args: Vec<&mut FigArg>, completes: IndexMap<String, SpecComplete>) {
@@ -326,65 +337,6 @@ impl Fig {
         completable_args.for_each(|a| {
             let x = a.unwrap();
             x.0.update_from_complete(x.1)
-        });
-        
+        });   
     }
-
-    pub fn run(&self) -> miette::Result<()> {
-        let write = |path: &PathBuf, md: &str| -> miette::Result<()> {
-            println!("writing to {}", path.display());
-            xx::file::write(path, format!("{}\n", md.trim()))?;
-            Ok(())
-        };
-        let (spec, _) = Spec::parse_file(&self.file)?;
-        let mut main_command = FigCommand::parse_from_spec(&spec.cmd).unwrap();
-        let args = main_command.get_args();
-        let completes = spec.complete;
-        Fig::fill_args_complete(args, completes);
-        let j = serde_json::to_string_pretty(&main_command).unwrap();
-        let path = self.out_file.clone().unwrap_or(PathBuf::from(".(mise.test.ts"));
-        let mut result = format!("const completionSpec: Fig.Spec = {j}");
-
-
-        let generators = main_command.get_generators();
-        let generator_text = Fig::get_generator_text();
-        generators.iter().cloned().for_each(|g| {
-            let template_str = g.template_str;
-            let generator_name = (g.type_ == GeneratorType::Mount).then(|| "usageGeneratorTemplate".to_string())
-                .or((g.type_ == GeneratorType::Complete).then(|| "completionGeneratorTemplate".to_string()))
-                .unwrap_or(g.name);
-            let generator_str = g.script;
-            let generator_postprocess = g.post_process;
-            let arg = (g.type_ == GeneratorType::Mount)
-                .then(|| format!("(\"{generator_str})\""))
-                .or((g.type_ == GeneratorType::Complete).then(|| format!("(`{generator_postprocess}`)")))
-                .unwrap_or("".to_string());
-            result = result.replace(format!("\"{template_str}\"").as_str(), format!("Generators.{generator_name}{arg}").as_str())
-        });
-
-        result = [[generator_text, result, "export default completionSpec;".to_string()]].concat().join("\n\n");
-        write(&path, result.as_str());
-        Ok(())
-    }
-
-    /*
-    fn old_run(&self) {
-        let mut ctx = RecursiveContext::new();
-        let name = spec.cmd.name;
-        ctx.drill_down(name.clone());
-        let mut subcommands = spec.cmd.subcommands.into_iter().map(|(k, v)| self.parse_command(ctx.clone(), k,v));
-        let description = spec.cmd.help.unwrap_or(String::from(""));
-        let subcommand_str = subcommands.join(",\n    ");
-        let path = PathBuf::from("./mise.test.ts");
-        let full_str = format!("{{
-        name: \"{name}\",
-        description: `{description}`,
-        subcommands: [
-        {subcommand_str}
-        ]
-        }}");
-                
-                return write(&path, full_str.as_str());
-    }
-     */
 }
